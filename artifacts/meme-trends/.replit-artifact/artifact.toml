@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/meme-trends/"
+title = "MemeRadar — Trending Memes Dashboard"
+version = "1.0.0"
+id = "artifacts/meme-trends"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/meme-trends/" ]
+localPort = 18722
+
+[services.development]
+run = "pnpm --filter @workspace/meme-trends run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/meme-trends", "run", "build" ]
+publicDir = "artifacts/meme-trends/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18722"
+BASE_PATH = "/meme-trends/"
