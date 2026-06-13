@@ -33,7 +33,7 @@ async function fetchSubreddit(subreddit: string, count: number): Promise<RedditP
     const res = await fetch(`/api/reddit/${subreddit}?count=${count}`);
     if (!res.ok) {
       if (res.status === 429) throw new Error("Rate limited — please wait a moment.");
-      throw new Error(`Failed to fetch from ${subreddit}: ${res.statusText}`);
+      return [];
     }
 
     const json = await res.json();
@@ -61,7 +61,6 @@ async function fetchSubreddit(subreddit: string, count: number): Promise<RedditP
 
 function countForSort(sort: SortType, time: TimeType): number {
   if (sort === "top") {
-    // More posts for broader time windows
     return time === "all" ? 50 : time === "month" ? 45 : time === "week" ? 40 : 30;
   }
   if (sort === "rising") return 50;
@@ -71,12 +70,9 @@ function countForSort(sort: SortType, time: TimeType): number {
 function applySortLogic(posts: RedditPost[], sort: SortType): RedditPost[] {
   switch (sort) {
     case "hot":
-      // High-score posts first — "hot" right now
       return [...posts].sort((a, b) => b.score - a.score);
 
     case "new":
-      // Lower-score posts first — they're fresh and haven't gone viral yet
-      // Shuffle in slight randomness to feel like a live new feed
       return [...posts]
         .sort((a, b) => a.score - b.score)
         .map((p, i) => ({ p, rank: i + (Math.random() * 3 - 1.5) }))
@@ -84,20 +80,17 @@ function applySortLogic(posts: RedditPost[], sort: SortType): RedditPost[] {
         .map(({ p }) => p);
 
     case "rising": {
-      // Rising = gaining traction — posts in the mid-score range
-      const midRange = posts.filter((p) => p.score >= 100 && p.score <= 12000);
-      const megaViral = posts.filter((p) => p.score > 12000);
+      const mid = posts.filter((p) => p.score >= 100 && p.score <= 12000);
+      const mega = posts.filter((p) => p.score > 12000);
       const fresh = posts.filter((p) => p.score < 100);
-      // Show mid-range first (rising), then mega-viral, then very fresh
       return [
-        ...midRange.sort((a, b) => b.score - a.score),
-        ...megaViral.sort((a, b) => b.score - a.score),
+        ...mid.sort((a, b) => b.score - a.score),
+        ...mega.sort((a, b) => b.score - a.score),
         ...fresh.sort((a, b) => b.score - a.score),
       ];
     }
 
     case "top":
-      // Strict best-of sort — highest score wins
       return [...posts].sort((a, b) => b.score - a.score);
 
     default:
@@ -105,15 +98,49 @@ function applySortLogic(posts: RedditPost[], sort: SortType): RedditPost[] {
   }
 }
 
-export function useRedditMemes(subreddits: string[], sort: SortType, time: TimeType) {
+function applyKeywordFilter(posts: RedditPost[], keywords: string[]): RedditPost[] {
+  if (!keywords.length) return posts;
+  const kws = keywords.map((k) => k.toLowerCase());
+  const matched = posts.filter((p) => {
+    const text = `${p.title} ${p.subreddit}`.toLowerCase();
+    return kws.some((k) => text.includes(k));
+  });
+  // If keyword filtering is too aggressive (< 3 results), return all posts
+  // — at least the user sees content from the right community
+  return matched.length >= 3 ? matched : posts;
+}
+
+export function useRedditMemes(
+  primarySubreddits: string[],
+  sort: SortType,
+  time: TimeType,
+  options?: {
+    fallbackSubreddits?: string[];
+    keywords?: string[];
+  }
+) {
   const fetchCount = countForSort(sort, time);
+  const fallback = options?.fallbackSubreddits ?? [];
+  const keywords = options?.keywords ?? [];
 
   return useQuery({
-    queryKey: ["memes", subreddits, sort, time],
+    queryKey: ["memes", primarySubreddits, sort, time, fallback, keywords],
     queryFn: async () => {
-      const promises = subreddits.map((sub) => fetchSubreddit(sub, fetchCount));
-      const results = await Promise.all(promises);
-      const allPosts = results.flat();
+      // Fetch primary subreddits
+      const primaryResults = await Promise.all(
+        primarySubreddits.map((sub) => fetchSubreddit(sub, fetchCount))
+      );
+      const primaryPosts = primaryResults.flat();
+
+      // If we have very few posts from primary subs, also fetch fallback subs
+      let allPosts = primaryPosts;
+      if (primaryPosts.length < 5 && fallback.length > 0) {
+        const fallbackResults = await Promise.all(
+          fallback.map((sub) => fetchSubreddit(sub, fetchCount))
+        );
+        const fallbackPosts = fallbackResults.flat();
+        allPosts = [...primaryPosts, ...fallbackPosts];
+      }
 
       // De-duplicate by id
       const uniqueIds = new Set<string>();
@@ -125,7 +152,10 @@ export function useRedditMemes(subreddits: string[], sort: SortType, time: TimeT
         }
       }
 
-      return applySortLogic(deduped, sort);
+      // Apply keyword filter when we have fallback posts mixed in
+      const filtered = keywords.length > 0 ? applyKeywordFilter(deduped, keywords) : deduped;
+
+      return applySortLogic(filtered, sort);
     },
     refetchInterval: 5 * 60 * 1000,
     staleTime: 30 * 1000,

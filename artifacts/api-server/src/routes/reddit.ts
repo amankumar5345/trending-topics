@@ -18,12 +18,25 @@ router.get("/reddit/:subreddit", async (req, res) => {
       },
     });
 
+    // Treat 400, 404, 500 as "no posts" — these subreddits exist but aren't
+    // image-heavy enough for meme-api.com, fall through to empty gracefully
     if (!response.ok) {
+      if (response.status === 400 || response.status === 404 || response.status === 500) {
+        res.json({ count: 0, memes: [] });
+        return;
+      }
       res.status(response.status).json({ error: `API returned ${response.status}` });
       return;
     }
 
     const data = await response.json();
+
+    // meme-api.com can return error JSON with a 200 status
+    if (data?.code === 404 || data?.message?.toLowerCase?.().includes("not found")) {
+      res.json({ count: 0, memes: [] });
+      return;
+    }
+
     res.json(data);
   } catch (err) {
     req.log.error({ err }, "Failed to proxy meme request");
